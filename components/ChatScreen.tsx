@@ -7,12 +7,14 @@ import * as ImageManipulator from 'expo-image-manipulator';
 import * as ImagePicker from 'expo-image-picker';
 import * as Location from 'expo-location';
 import { useRouter } from 'expo-router';
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
     Alert,
+    Dimensions,
     FlatList,
     Image,
     KeyboardAvoidingView,
+    Modal,
     Platform,
     ScrollView,
     StyleSheet,
@@ -92,7 +94,7 @@ const tabs: TabDef[] = [
         tint: colors.attraction ?? colors.primary,
     },
 ];
-
+const screenWidth = Dimensions.get('window').width;
 export default function ChatScreen({
     title,
     placeholder,
@@ -113,6 +115,11 @@ export default function ChatScreen({
     const insets = useSafeAreaInsets();
     const journeyId = currentJourney?.id ?? 'no_journey';
     const storageKey = `${STORAGE_KEY_PREFIX}${journeyId}_${category}`;
+    const [previewImages, setPreviewImages] = useState<{
+        uris: string[];
+        index: number;
+    } | null>(null);
+    const scrollRef = useRef<ScrollView | null>(null);
 
     // ====== 記錄最後頁面 ======
     useEffect(() => {
@@ -142,6 +149,23 @@ export default function ChatScreen({
             console.warn('Failed to save chat history', e)
         );
     }, [messages, storageKey]);
+
+    // ====== 初始化大圖預覽 model ======
+    useEffect(() => {
+        if (!previewImages || !scrollRef.current) return;
+
+        const index = previewImages.index ?? 0;
+
+        // 下一個 frame 再 scroll，避免還沒 layout 完就捲動
+        requestAnimationFrame(() => {
+            scrollRef.current?.scrollTo({
+                x: index * screenWidth,
+                y: 0,
+                animated: false,
+            });
+        });
+    }, [previewImages, screenWidth]);
+
 
     // ====== 檢查 API key / Journey ======
     useFocusEffect(
@@ -271,18 +295,34 @@ export default function ChatScreen({
     const renderItem = ({ item }: { item: Message }) => {
         const isUser = item.role === 'user';
         return (
-            <View
-                style={[
-                    styles.bubble,
-                    isUser ? styles.userBubble : styles.assistantBubble,
-                ]}
-            >
-                {item.imageUris &&
-                    item.imageUris.map((uri, idx) => (
-                        <Image key={idx} source={{ uri }} style={styles.messageImage} />
-                    ))}
+            <View style={[
+                styles.bubble,
+                isUser ? styles.userBubble : styles.assistantBubble,
+            ]}>
+                {item.imageUris && item.imageUris.length > 0 && (
+                    <ScrollView
+                        horizontal
+                        showsHorizontalScrollIndicator={false}
+                        style={styles.messageImageCarousel}
+                        contentContainerStyle={styles.messageImageRow}
+                    >
+                        {item.imageUris.map((uri, idx) => (
+                            <TouchableOpacity
+                                key={idx}
+                                activeOpacity={0.8}
+                                onPress={() =>
+                                    setPreviewImages({
+                                        uris: item.imageUris || [],
+                                        index: idx,
+                                    })
+                                }// 👈 點縮圖放大
+                            >
+                                <Image source={{ uri }} style={styles.messageThumb} />
+                            </TouchableOpacity>
+                        ))}
+                    </ScrollView>
+                )}
 
-                {/* ✅ 允許長壓選取文字 */}
                 <Text style={styles.bubbleText} selectable>
                     {item.content}
                 </Text>
@@ -341,7 +381,7 @@ export default function ChatScreen({
                             />
                         </TouchableOpacity>
                     </View>
-                    
+
                     {searchActive && (
                         <TextInput
                             style={styles.searchInput}
@@ -447,6 +487,48 @@ export default function ChatScreen({
                         <Ionicons name="arrow-up" size={18} color="#fff" />
                     </TouchableOpacity>
                 </View>
+
+                {/* 大圖預覽 */}
+                {previewImages && (
+                    <Modal
+                        visible={!!previewImages}
+                        transparent
+                        animationType="fade"
+                        onRequestClose={() => setPreviewImages(null)}
+                    >
+                        <View style={styles.modalOverlay}>
+                            {/* 點背景關閉 */}
+                            <TouchableOpacity
+                                style={StyleSheet.absoluteFill}
+                                activeOpacity={1}
+                                onPress={() => setPreviewImages(null)}
+                            />
+
+                            <View style={styles.modalContent}>
+                                <ScrollView
+                                    ref={scrollRef}
+                                    horizontal
+                                    pagingEnabled
+                                    showsHorizontalScrollIndicator={false}
+                                >
+                                    {previewImages.uris.map((uri, idx) => (
+                                        <View key={idx} style={styles.modalImagePage}>
+                                            <Image source={{ uri }} style={styles.modalImage} />
+                                        </View>
+                                    ))}
+                                </ScrollView>
+
+                                <TouchableOpacity
+                                    style={styles.modalCloseButton}
+                                    onPress={() => setPreviewImages(null)}
+                                >
+                                    <Ionicons name="close" size={24} color="#fff" />
+                                </TouchableOpacity>
+                            </View>
+                        </View>
+                    </Modal>
+                )}
+
             </KeyboardAvoidingView>
         </SafeAreaView>
     );
@@ -598,4 +680,56 @@ const styles = StyleSheet.create({
         justifyContent: 'center',
         alignItems: 'center',
     },
+    messageImageRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        paddingVertical: 2,
+    },
+    messageThumb: {
+        width: 72,
+        height: 72,
+        borderRadius: 10,
+        borderWidth: 1,
+        borderColor: colors.border,
+        backgroundColor: '#020617',
+        marginRight: 8,
+    },
+    messageImageCarousel: {
+        maxHeight: 80,        // 👈 明確限制 ScrollView 的高度
+        marginBottom: 4,
+    },
+    modalOverlay: {
+        flex: 1,
+        backgroundColor: 'rgba(0,0,0,0.9)',
+        justifyContent: 'center',
+        alignItems: 'center',
+    },
+    modalContent: {
+        width: '100%',
+        height: '100%',
+        justifyContent: 'center',
+        alignItems: 'center',
+    },
+    modalImagePage: {
+        width: Dimensions.get('window').width, // 每頁寬度 = 螢幕寬度，paging 才會一頁一卡
+        justifyContent: 'center',
+        alignItems: 'center',
+    },
+    modalImage: {
+        width: '90%',
+        height: '80%',
+        resizeMode: 'contain',
+    },
+    modalCloseButton: {
+        position: 'absolute',
+        top: 40,
+        right: 24,
+        width: 32,
+        height: 32,
+        borderRadius: 16,
+        backgroundColor: 'rgba(0,0,0,0.6)',
+        justifyContent: 'center',
+        alignItems: 'center',
+    },
+
 });
